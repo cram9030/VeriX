@@ -4,6 +4,7 @@ import onnx
 import onnxruntime as ort
 from skimage.color import label2rgb
 from matplotlib import pyplot as plt
+import os
 # import sys
 # sys.path.insert(0, "Marabou")
 """
@@ -38,16 +39,22 @@ class VeriX:
                  dataset,
                  image,
                  model_path,
-                 plot_original=True):
+                 plot_original=True,
+                 output_dir='.'):
         """
         To initialize the VeriX class.
         :param dataset: 'MNIST' or 'GTSRB'.
         :param image: an image array of shape (width, height, channel).
         :param model_path: the path to the neural network.
         :param plot_original: if True, then plot the original image.
+        :param output_dir: the directory where output files will be saved (default: current directory).
         """
+
         self.dataset = dataset
         self.image = image
+        self.output_dir = output_dir
+        # Create output directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
         """
         Load the onnx model.
         """
@@ -72,7 +79,7 @@ class VeriX:
         self.outputVars = self.mara_model.outputVars[0].flatten()
         if plot_original:
             save_figure(image=image,
-                        path=f"original-predicted-as-{self.label}.png",
+                        path=os.path.join(self.output_dir, f"original-predicted-as-{self.label}.png"),
                         cmap="gray" if self.dataset == 'MNIST' else None)
 
     def traversal_order(self,
@@ -114,7 +121,7 @@ class VeriX:
             self.inputVars = sorted_index
             self.sensitivity = features.reshape(width, height)
             if plot_sensitivity:
-                save_figure(image=self.sensitivity, path=f'{self.dataset}-sensitivity-{self.traverse}.png')
+                save_figure(image=self.sensitivity, path=os.path.join(self.output_dir, f'{self.dataset}-sensitivity-{self.traverse}.png'))
         elif self.traverse == "random":
             random.seed(seed)
             random.shuffle(self.inputVars)
@@ -123,6 +130,7 @@ class VeriX:
 
     def get_explanation(self,
                         epsilon,
+                        delta=-1e-6,
                         plot_explanation=True,
                         plot_counterfactual=False,
                         plot_timeout=False):
@@ -132,11 +140,18 @@ class VeriX:
         :param plot_explanation: if True, plot the explanation.
         :param plot_counterfactual: if True, plot the counterfactual(s).
         :param plot_timeout: if True, plot the timeout pixel(s).
-        :return: an explanation, and possible counterfactual(s).
+        :return: A dictionary containing:
+            - 'sat_set': list of pixel indices where adversarial examples exist
+            - 'timeout_set': list of pixel indices where solver timed out
+            - 'unsat_set': list of pixel indices where no adversarial examples exist
+            - 'history': list of dicts recording state at each iteration, with keys:
+                'step', 'pixel', 'result', 'unsat_size', 'sat_set', 'timeout_set', 'unsat_set'
         """
         unsat_set = []
         sat_set = []
         timeout_set = []
+        history = []
+        step = 0
         width, height, channel = self.image.shape[0], self.image.shape[1], self.image.shape[2]
         image = self.image.reshape(width * height, channel)
         for pixel in self.inputVars:
@@ -182,7 +197,7 @@ class VeriX:
                 """
                 if j != self.label:
                     self.mara_model.addInequality([self.outputVars[self.label], self.outputVars[j]],
-                                                  [1, -1], -1e-6,
+                                                  [1, -1], delta,
                                                   isProperty=True)
                     exit_code, vals, stats = self.mara_model.solve(options=self.options, verbose=False)
                     """
@@ -198,24 +213,48 @@ class VeriX:
             """
             self.mara_model.clearProperty()
             """
-            If unsat, put the pixel into the irrelevant set; 
-            if timeout, into the timeout set; 
+            If unsat, put the pixel into the irrelevant set;
+            if timeout, into the timeout set;
             if sat, into the explanation.
+            Record history at every iteration with current state.
             """
+            # Record the unsat_size BEFORE processing this pixel
+            unsat_size_before = len(unsat_set)
+
             if exit_code == 'unsat':
                 unsat_set.append(pixel)
+                result = 'unsat'
             elif exit_code == 'TIMEOUT':
                 timeout_set.append(pixel)
+                result = 'timeout'
             elif exit_code == 'sat':
                 sat_set.append(pixel)
+                result = 'sat'
+
+            # Record history at every iteration
+            history.append({
+                'step': int(step),
+                'pixel': int(pixel),
+                'result': result,
+                'unsat_size': unsat_size_before,
+                'sat_set': sat_set.copy(),
+                'timeout_set': timeout_set.copy(),
+                'unsat_set': unsat_set.copy()
+            })
+
+            if exit_code == 'sat':
                 if plot_counterfactual:
                     counterfactual = [vals.get(i) for i in self.mara_model.inputVars[0].flatten()]
                     counterfactual = np.asarray(counterfactual).reshape(self.image.shape)
                     prediction = [vals.get(i) for i in self.outputVars]
                     prediction = np.asarray(prediction).argmax()
                     save_figure(image=counterfactual,
-                                path="counterfactual-at-pixel-%d-predicted-as-%d.png" % (pixel, prediction),
+                                path=os.path.join(self.output_dir, "counterfactual-at-pixel-%d-predicted-as-%d.png" % (pixel, prediction)),
                                 cmap="gray" if self.dataset == 'MNIST' else None)
+
+            # Increment step counter at the end of each iteration
+            step += 1
+
         if plot_explanation:
             mask = np.zeros(self.inputVars.shape).astype(bool)
             mask[sat_set] = True
@@ -226,7 +265,7 @@ class VeriX:
                                         colors=[[0, 1, 0]] if self.traverse == 'heuristic' else [[1, 0, 0]],
                                         bg_label=0,
                                         saturation=1),
-                        path="explanation-%d.png" % (len(sat_set) + len(timeout_set)))
+                        path=os.path.join(self.output_dir, "explanation-%d.png" % (len(sat_set) + len(timeout_set))))
         if plot_timeout:
             mask = np.zeros(self.inputVars.shape).astype(bool)
             mask[timeout_set] = True
@@ -236,7 +275,13 @@ class VeriX:
                                         colors=[[0, 1, 0]] if self.traverse == 'heuristic' else [[1, 0, 0]],
                                         bg_label=0,
                                         saturation=1),
-                        path="timeout-%d.png" % len(timeout_set))
+                        path=os.path.join(self.output_dir, "timeout-%d.png" % len(timeout_set)))
+        return {
+            'sat_set': sat_set,
+            'timeout_set': timeout_set,
+            'unsat_set': unsat_set,
+            'history': history
+        }
 
 
 def save_figure(image, path, cmap=None):

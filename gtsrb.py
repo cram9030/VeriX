@@ -3,7 +3,7 @@ from keras.models import Sequential
 from keras.layers import Dense, Flatten
 from keras.utils import to_categorical
 from keras.losses import CategoricalCrossentropy
-from keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.preprocessing.image  import ImageDataGenerator
 from keras.optimizers import Adam
 import tf2onnx
 from VeriX import *
@@ -28,11 +28,12 @@ gtsrb_labels = ['50 mph', '30 mph', 'yield', 'priority road',
                 'road work', 'no passing']
 
 """
-show a simple example usage of VeriX. 
+show a simple example usage of VeriX.
 """
 verix = VeriX(dataset="GTSRB",
               image=x_test[0],
-              model_path="models/gtsrb-10x2.onnx")
+              model_path="models/gtsrb-10x2.onnx",
+              output_dir="outputs/gtsrb")
 verix.traversal_order(traverse="heuristic")
 verix.get_explanation(epsilon=0.01)
 

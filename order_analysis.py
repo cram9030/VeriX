@@ -1,0 +1,729 @@
+"""
+Order Analysis Script for VeriX
+
+This script analyzes the efficiency of different traversal orders (heuristic vs random)
+by running VeriX on multiple images and generating:
+1. Histogram comparing the traversal orders
+2. Animations showing the pixel classification process
+
+Usage:
+    python order_analysis.py --dataset MNIST --num_images 5 --animation_image_idx 0
+"""
+
+import argparse
+import os
+import json
+import random
+import base64
+from datetime import datetime
+from io import BytesIO
+import numpy as np
+import plotly.graph_objects as go
+from VeriX import VeriX
+
+
+def encode_image_to_base64(image_array):
+    """
+    Encode a numpy image array to base64 string for JSON storage.
+
+    :param image_array: numpy array of image
+    :return: base64-encoded string
+    """
+    # Convert to bytes
+    buffer = BytesIO()
+    np.save(buffer, image_array)
+    buffer.seek(0)
+    encoded = base64.b64encode(buffer.read()).decode('utf-8')
+    return encoded
+
+
+def decode_image_from_base64(encoded_string):
+    """
+    Decode a base64 string back to numpy image array.
+
+    :param encoded_string: base64-encoded string
+    :return: numpy array of image
+    """
+    decoded = base64.b64decode(encoded_string.encode('utf-8'))
+    buffer = BytesIO(decoded)
+    buffer.seek(0)
+    image_array = np.load(buffer)
+    return image_array
+
+
+def load_dataset(dataset_name):
+    """
+    Load the specified dataset (MNIST or GTSRB).
+
+    :param dataset_name: 'MNIST' or 'GTSRB'
+    :return: tuple of (x_test, y_test, model_path)
+    """
+    if dataset_name == 'MNIST':
+        from tensorflow.keras.datasets import mnist
+        (x_train, y_train), (x_test, y_test) = mnist.load_data()
+        x_test = x_test.reshape(x_test.shape[0], 28, 28, 1)
+        x_test = x_test.astype('float32') / 255
+        model_path = 'models/mnist-10x2.onnx'
+        return x_test, y_test, model_path
+
+    elif dataset_name == 'GTSRB':
+        import pickle
+        with open('models/gtsrb.pickle', 'rb') as f:
+            data = pickle.load(f, encoding='bytes')
+        x_test = data[b'x_test']
+        y_test = data[b'y_test']
+        x_test = x_test.astype('float32') / 255
+        model_path = 'models/gtsrb-10x2.onnx'
+        return x_test, y_test, model_path
+
+    else:
+        raise ValueError(f"Dataset '{dataset_name}' not supported. Use 'MNIST' or 'GTSRB'.")
+
+
+def select_images(x_test, num_images, image_indices=None, seed=None):
+    """
+    Select images from the test set.
+
+    :param x_test: test images
+    :param num_images: number of images to select
+    :param image_indices: specific indices to use (optional)
+    :param seed: random seed for reproducibility
+    :return: list of selected image indices
+    """
+    if image_indices is not None:
+        return image_indices
+
+    if seed is not None:
+        random.seed(seed)
+
+    return random.sample(range(len(x_test)), num_images)
+
+
+def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir):
+    """
+    Run VeriX analysis on a single image with specified traversal order.
+
+    :param dataset: dataset name
+    :param image: image array
+    :param model_path: path to ONNX model
+    :param traverse: 'heuristic' or 'random'
+    :param epsilon: perturbation magnitude
+    :param output_dir: directory for outputs
+    :return: result dictionary from get_explanation
+    """
+    verix = VeriX(
+        dataset=dataset,
+        image=image,
+        model_path=model_path,
+        plot_original=False,
+        output_dir=output_dir
+    )
+
+    verix.traversal_order(traverse=traverse, plot_sensitivity=False)
+
+    result = verix.get_explanation(
+        epsilon=epsilon,
+        plot_explanation=False,
+        plot_counterfactual=False,
+        plot_timeout=False
+    )
+
+    return result
+
+
+def load_results_from_json(json_path):
+    """
+    Load complete results from a JSON file.
+
+    :param json_path: path to the results JSON file
+    :return: tuple of (config dict, all_results list with decoded images)
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    config = data['config']
+    json_results = data['results']
+
+    # Decode images and reconstruct results
+    all_results = []
+    for json_result in json_results:
+        # Decode image from base64
+        image = decode_image_from_base64(json_result['image_data'])
+
+        # Reconstruct result structure
+        result = {
+            'image_idx': json_result['image_idx'],
+            'image': image,
+            'heuristic': {
+                'sat_set': json_result['heuristic']['sat_set'],
+                'timeout_set': json_result['heuristic']['timeout_set'],
+                'unsat_set': json_result['heuristic']['unsat_set'],
+                'history': json_result['heuristic']['history']
+            },
+            'random': {
+                'sat_set': json_result['random']['sat_set'],
+                'timeout_set': json_result['random']['timeout_set'],
+                'unsat_set': json_result['random']['unsat_set'],
+                'history': json_result['random']['history']
+            }
+        }
+        all_results.append(result)
+
+    return config, all_results
+
+
+def generate_histogram(all_results, dataset, output_dir):
+    """
+    Generate histogram comparing heuristic vs random traversal orders.
+
+    X-axis: unsat_set size at the time a SAT pixel was found
+    Y-axis: count of SAT pixels found at that unsat_set size
+
+    :param all_results: dictionary containing results from all images
+    :param dataset: dataset name for title
+    :param output_dir: directory to save the HTML file
+    """
+    # Aggregate data for histogram
+    heuristic_bins = {}
+    random_bins = {}
+
+    for result in all_results:
+        history = result['heuristic']['history']
+        for entry in history:
+            if entry['result'] == 'sat':
+                unsat_size = entry['unsat_size']
+                heuristic_bins[unsat_size] = heuristic_bins.get(unsat_size, 0) + 1
+
+        history = result['random']['history']
+        for entry in history:
+            if entry['result'] == 'sat':
+                unsat_size = entry['unsat_size']
+                random_bins[unsat_size] = random_bins.get(unsat_size, 0) + 1
+
+    # Prepare data for plotting
+    max_unsat = max(max(heuristic_bins.keys(), default=0), max(random_bins.keys(), default=0))
+    x_values = list(range(max_unsat + 1))
+
+    heuristic_counts = [heuristic_bins.get(x, 0) for x in x_values]
+    random_counts = [random_bins.get(x, 0) for x in x_values]
+
+    # Calculate zoom range (first and last non-zero bins)
+    all_bins = set(heuristic_bins.keys()).union(set(random_bins.keys()))
+    if all_bins:
+        min_nonzero = min(all_bins)
+        max_nonzero = max(all_bins)
+    else:
+        min_nonzero, max_nonzero = 0, 0
+
+    # Create plotly figure
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=x_values,
+        y=heuristic_counts,
+        name='Heuristic',
+        marker_color='green',
+        opacity=0.7
+    ))
+
+    fig.add_trace(go.Bar(
+        x=x_values,
+        y=random_counts,
+        name='Random',
+        marker_color='red',
+        opacity=0.7
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=f'{dataset} - SAT Pixels Found vs Unsat Set Size',
+            font=dict(size=20)
+        ),
+        xaxis_title=dict(
+            text='Unsat Set Size (number of irrelevant pixels identified)',
+            font=dict(size=16)
+        ),
+        yaxis_title=dict(
+            text='Count of SAT Pixels Found',
+            font=dict(size=16)
+        ),
+        xaxis=dict(
+            range=[min_nonzero - 0.5, max_nonzero + 0.5],
+            tickfont=dict(size=14)
+        ),
+        yaxis=dict(
+            tickfont=dict(size=14)
+        ),
+        barmode='group',
+        template='plotly_white',
+        hovermode='x unified',
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99,
+            font=dict(size=14)
+        )
+    )
+
+    # Add summary statistics as annotations
+    heuristic_total = sum(heuristic_counts)
+    random_total = sum(random_counts)
+    heuristic_mean = sum(k * v for k, v in heuristic_bins.items()) / heuristic_total if heuristic_total > 0 else 0
+    random_mean = sum(k * v for k, v in random_bins.items()) / random_total if random_total > 0 else 0
+
+    annotation_text = (
+        f"<b>Summary:</b><br>"
+        f"Heuristic - Total SAT: {heuristic_total}, Mean Unsat Size: {heuristic_mean:.2f}<br>"
+        f"Random - Total SAT: {random_total}, Mean Unsat Size: {random_mean:.2f}"
+    )
+
+    fig.add_annotation(
+        text=annotation_text,
+        xref="paper", yref="paper",
+        x=0.02, y=0.98,
+        showarrow=False,
+        bgcolor="white",
+        bordercolor="black",
+        borderwidth=1,
+        align="left",
+        font=dict(size=12)
+    )
+
+    # Save as HTML
+    output_path = os.path.join(output_dir, 'histogram_comparison.html')
+    fig.write_html(output_path)
+    print(f"Histogram saved to: {output_path}")
+
+    return fig
+
+
+def create_composited_frame(base_image, history_entry, dataset):
+    """
+    Create a single composited frame with colored pixels overlaid on base image.
+
+    :param base_image: original image array
+    :param history_entry: single entry from history with sat_set, timeout_set, unsat_set
+    :param dataset: dataset name ('MNIST' or 'GTSRB')
+    :return: RGB image as uint8 array (0-255 range) for Plotly
+    """
+    width, height = base_image.shape[0], base_image.shape[1]
+
+    # Convert to RGB if grayscale
+    if dataset == 'MNIST':
+        base_gray = base_image[:, :, 0]
+        frame_rgb = np.stack([base_gray, base_gray, base_gray], axis=-1)
+    else:
+        frame_rgb = base_image.copy()
+
+    # Define colors (RGB format, values 0-1)
+    colors = {
+        'sat': np.array([0, 1, 0]),            # Green
+        'timeout': np.array([1, 0.647, 0]),    # Orange
+        'unsat': np.array([0.678, 0.847, 0.902])  # Light blue
+    }
+    alpha = 0.6  # Transparency factor
+
+    # Apply colors with alpha blending for SAT pixels
+    for pixel_idx in history_entry['sat_set']:
+        row, col = pixel_idx // height, pixel_idx % height
+        frame_rgb[row, col] = alpha * colors['sat'] + (1 - alpha) * frame_rgb[row, col]
+
+    # Apply colors for TIMEOUT pixels
+    for pixel_idx in history_entry['timeout_set']:
+        row, col = pixel_idx // height, pixel_idx % height
+        frame_rgb[row, col] = alpha * colors['timeout'] + (1 - alpha) * frame_rgb[row, col]
+
+    # Apply colors for UNSAT pixels
+    for pixel_idx in history_entry['unsat_set']:
+        row, col = pixel_idx // height, pixel_idx % height
+        frame_rgb[row, col] = alpha * colors['unsat'] + (1 - alpha) * frame_rgb[row, col]
+
+    # Convert to uint8 (0-255 range) for Plotly
+    frame_uint8 = (frame_rgb * 255).astype(np.uint8)
+
+    return frame_uint8
+
+
+def generate_animation(image, result, dataset, traverse, image_idx, output_dir):
+    """
+    Generate animation showing the pixel classification process.
+
+    :param image: original image array
+    :param result: result dictionary from get_explanation
+    :param dataset: dataset name
+    :param traverse: traversal method used
+    :param image_idx: index of the image
+    :param output_dir: directory to save the HTML file
+    """
+    history = result['history']
+
+    # Create composited frames for animation
+    frames = []
+    for entry in history:
+        composited_frame = create_composited_frame(image, entry, dataset)
+        frames.append(composited_frame)
+
+    # Create the animation figure with first frame
+    fig = go.Figure(data=[go.Image(z=frames[0])])
+
+    # Add legend using invisible scatter traces
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None],
+        mode='markers',
+        marker=dict(size=10, color='rgb(0, 255, 0)'),
+        showlegend=True,
+        name='SAT (Relevant)'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None],
+        mode='markers',
+        marker=dict(size=10, color='rgb(255, 165, 0)'),
+        showlegend=True,
+        name='TIMEOUT'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None],
+        mode='markers',
+        marker=dict(size=10, color='rgb(173, 216, 230)'),
+        showlegend=True,
+        name='UNSAT (Irrelevant)'
+    ))
+
+    # Create animation frames
+    plotly_frames = []
+    for i, composited_frame in enumerate(frames):
+        entry = history[i]
+
+        frame_title = (
+            f"{dataset} - {traverse.capitalize()} Traversal - Image {image_idx} | "
+            f"Step: {entry['step']} | "
+            f"SAT: {len(entry['sat_set'])} | "
+            f"TIMEOUT: {len(entry['timeout_set'])} | "
+            f"UNSAT: {len(entry['unsat_set'])}"
+        )
+
+        # Frame data only includes the image - legend traces are static in initial figure
+        frame_data = [go.Image(z=composited_frame)]
+
+        plotly_frames.append(go.Frame(
+            data=frame_data,
+            name=str(i),
+            traces=[0],  # Explicitly update only trace 0 (the image)
+            layout=go.Layout(title_text=frame_title)
+        ))
+
+    fig.frames = plotly_frames
+
+    # Update layout with animation controls
+    fig.update_layout(
+        title=f"{dataset} - {traverse.capitalize()} Traversal - Image {image_idx}",
+        xaxis=dict(showticklabels=False, showgrid=False, constrain='domain'),
+        yaxis=dict(showticklabels=False, showgrid=False, scaleanchor='x', constrain='domain'),
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255, 255, 255, 0.8)"
+        ),
+        updatemenus=[
+            dict(
+                type="buttons",
+                buttons=[
+                    dict(label="Play",
+                         method="animate",
+                         args=[None, {"frame": {"duration": 10, "redraw": True},
+                                     "fromcurrent": True,
+                                     "mode": "immediate",
+                                     "transition": {"duration": 0}}]),
+                    dict(label="Pause",
+                         method="animate",
+                         args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                       "mode": "immediate",
+                                       "transition": {"duration": 0}}])
+                ],
+                direction="left",
+                pad={"r": 10, "t": 87},
+                showactive=False,
+                x=0.1,
+                xanchor="right",
+                y=0,
+                yanchor="top"
+            )
+        ],
+        sliders=[
+            dict(
+                active=0,
+                yanchor="top",
+                y=-0.1,
+                xanchor="left",
+                currentvalue=dict(
+                    prefix="Step: ",
+                    visible=True,
+                    xanchor="right"
+                ),
+                transition=dict(duration=0),
+                pad=dict(b=10, t=50),
+                len=0.9,
+                x=0.1,
+                steps=[
+                    dict(
+                        args=[[f.name], {"frame": {"duration": 0, "redraw": True},
+                                        "mode": "immediate",
+                                        "transition": {"duration": 0}}],
+                        label=str(k),
+                        method="animate"
+                    )
+                    for k, f in enumerate(fig.frames)
+                ]
+            )
+        ]
+    )
+
+    # Save as HTML
+    output_filename = f'animation_{traverse}_image_{image_idx}.html'
+    output_path = os.path.join(output_dir, output_filename)
+    fig.write_html(output_path, auto_play=False)
+    print(f"Animation saved to: {output_path}")
+
+    return fig
+
+
+def main():
+    parser = argparse.ArgumentParser(description='VeriX Order Analysis')
+
+    # Load mode: regenerate plots from existing results
+    parser.add_argument('--load_results', type=str, default=None,
+                        help='Path to results JSON file (for plot-only mode)')
+
+    # Analysis mode parameters (not required if loading from JSON)
+    parser.add_argument('--dataset', type=str, choices=['MNIST', 'GTSRB'],
+                        help='Dataset to use (MNIST or GTSRB)')
+    parser.add_argument('--num_images', type=int,
+                        help='Number of images to analyze')
+    parser.add_argument('--epsilon', type=float, default=None,
+                        help='Perturbation magnitude (default: 0.05 for MNIST, 0.01 for GTSRB)')
+    parser.add_argument('--image_indices', type=int, nargs='+', default=None,
+                        help='Specific image indices to use (optional)')
+    parser.add_argument('--random_seed', type=int, default=42,
+                        help='Random seed for reproducibility (default: 42)')
+
+    # Common parameters
+    parser.add_argument('--animation_image_idx', type=int, required=True,
+                        help='Index (0-based) from the selected set to animate')
+    parser.add_argument('--output_dir', type=str, default='outputs/order_analysis',
+                        help='Output directory (default: outputs/order_analysis)')
+
+    args = parser.parse_args()
+
+    # Validate arguments based on mode
+    if args.load_results is None:
+        # Full analysis mode: require dataset and num_images
+        if args.dataset is None or args.num_images is None:
+            parser.error("--dataset and --num_images are required when not using --load_results")
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Branch based on mode
+    if args.load_results is not None:
+        # ===== PLOT-ONLY MODE: Load from JSON and regenerate plots =====
+        print(f"Loading results from: {args.load_results}")
+        config, all_results = load_results_from_json(args.load_results)
+
+        dataset = config['dataset']
+        print(f"Loaded {len(all_results)} results for dataset: {dataset}")
+
+        # Generate histogram
+        print("\n--- Generating histogram from loaded results ---")
+        generate_histogram(all_results, dataset, args.output_dir)
+
+        # Generate animations for specified image
+        if args.animation_image_idx < len(all_results):
+            print(f"\n--- Generating animations for image index {args.animation_image_idx} ---")
+            animation_result = all_results[args.animation_image_idx]
+            animation_image = animation_result['image']
+            animation_img_idx = animation_result['image_idx']
+
+            print("  Generating heuristic animation...")
+            generate_animation(
+                image=animation_image,
+                result=animation_result['heuristic'],
+                dataset=dataset,
+                traverse='heuristic',
+                image_idx=animation_img_idx,
+                output_dir=args.output_dir
+            )
+
+            print("  Generating random animation...")
+            generate_animation(
+                image=animation_image,
+                result=animation_result['random'],
+                dataset=dataset,
+                traverse='random',
+                image_idx=animation_img_idx,
+                output_dir=args.output_dir
+            )
+        else:
+            print(f"\n--- ERROR: animation_image_idx {args.animation_image_idx} is out of range (0-{len(all_results)-1}) ---")
+
+        print("\n=== Plot generation complete! ===")
+        print(f"All outputs saved to: {args.output_dir}")
+
+    else:
+        # ===== FULL ANALYSIS MODE: Run VeriX and generate everything =====
+
+        # Set default epsilon based on dataset
+        if args.epsilon is None:
+            args.epsilon = 0.05 if args.dataset == 'MNIST' else 0.01
+
+        print(f"Loading {args.dataset} dataset...")
+        x_test, y_test, model_path = load_dataset(args.dataset)
+
+        print(f"Selecting {args.num_images} images...")
+        selected_indices = select_images(x_test, args.num_images, args.image_indices, args.random_seed)
+        print(f"Selected image indices: {selected_indices}")
+
+        # Store all results
+        all_results = []
+
+        # Run analysis on each image
+        for i, img_idx in enumerate(selected_indices):
+            print(f"\n--- Processing image {i+1}/{args.num_images} (index: {img_idx}) ---")
+            image = x_test[img_idx]
+
+            print("  Running heuristic traversal...")
+            heuristic_result = run_verix_analysis(
+                dataset=args.dataset,
+                image=image,
+                model_path=model_path,
+                traverse='heuristic',
+                epsilon=args.epsilon,
+                output_dir=args.output_dir
+            )
+
+            print("  Running random traversal...")
+            random_result = run_verix_analysis(
+                dataset=args.dataset,
+                image=image,
+                model_path=model_path,
+                traverse='random',
+                epsilon=args.epsilon,
+                output_dir=args.output_dir
+            )
+
+            all_results.append({
+                'image_idx': img_idx,
+                'image': image,  # Store the actual image for JSON encoding
+                'heuristic': heuristic_result,
+                'random': random_result
+            })
+
+            print(f"  Heuristic - SAT: {len(heuristic_result['sat_set'])}, "
+                  f"TIMEOUT: {len(heuristic_result['timeout_set'])}, "
+                  f"UNSAT: {len(heuristic_result['unsat_set'])}")
+            print(f"  Random - SAT: {len(random_result['sat_set'])}, "
+                  f"TIMEOUT: {len(random_result['timeout_set'])}, "
+                  f"UNSAT: {len(random_result['unsat_set'])}")
+
+        # Generate histogram
+        print("\n--- Generating histogram ---")
+        generate_histogram(all_results, args.dataset, args.output_dir)
+
+        # Generate animations for specified image
+        if args.animation_image_idx < len(selected_indices):
+            print(f"\n--- Generating animations for image index {args.animation_image_idx} ---")
+            animation_img_idx = selected_indices[args.animation_image_idx]
+            animation_image = x_test[animation_img_idx]
+            animation_results = all_results[args.animation_image_idx]
+
+            print("  Generating heuristic animation...")
+            generate_animation(
+                image=animation_image,
+                result=animation_results['heuristic'],
+                dataset=args.dataset,
+                traverse='heuristic',
+                image_idx=animation_img_idx,
+                output_dir=args.output_dir
+            )
+
+            print("  Generating random animation...")
+            generate_animation(
+                image=animation_image,
+                result=animation_results['random'],
+                dataset=args.dataset,
+                traverse='random',
+                image_idx=animation_img_idx,
+                output_dir=args.output_dir
+            )
+        else:
+            print(f"\n--- ERROR: animation_image_idx {args.animation_image_idx} is out of range (0-{len(selected_indices)-1}) ---")
+
+        # Save complete results as JSON (with full history and image data)
+        print("\n--- Saving complete results ---")
+        # Convert numpy arrays and images to JSON-serializable format
+        json_results = []
+        for result in all_results:
+            # Encode image to base64
+            image_encoded = encode_image_to_base64(result['image'])
+
+            # Convert history entries (convert sets to lists)
+            def convert_history(history):
+                return [{
+                    'step': int(entry['step']),
+                    'pixel': int(entry['pixel']),
+                    'result': entry['result'],
+                    'unsat_size': int(entry['unsat_size']),
+                    'sat_set': [int(x) for x in entry['sat_set']],
+                    'timeout_set': [int(x) for x in entry['timeout_set']],
+                    'unsat_set': [int(x) for x in entry['unsat_set']]
+                } for entry in history]
+
+            json_result = {
+                'image_idx': int(result['image_idx']),
+                'image_data': image_encoded,
+                'image_shape': list(result['image'].shape),
+                'heuristic': {
+                    'sat_set': [int(x) for x in result['heuristic']['sat_set']],
+                    'timeout_set': [int(x) for x in result['heuristic']['timeout_set']],
+                    'unsat_set': [int(x) for x in result['heuristic']['unsat_set']],
+                    'history': convert_history(result['heuristic']['history'])
+                },
+                'random': {
+                    'sat_set': [int(x) for x in result['random']['sat_set']],
+                    'timeout_set': [int(x) for x in result['random']['timeout_set']],
+                    'unsat_set': [int(x) for x in result['random']['unsat_set']],
+                    'history': convert_history(result['random']['history'])
+                }
+            }
+            json_results.append(json_result)
+
+        # Create complete JSON with metadata
+        complete_json = {
+            'metadata': {
+                'timestamp': datetime.now().isoformat(),
+                'script_version': '2.0',
+                'description': 'Complete VeriX order analysis results with full history and image data'
+            },
+            'config': {
+                'dataset': args.dataset,
+                'num_images': args.num_images,
+                'epsilon': float(args.epsilon),
+                'random_seed': args.random_seed,
+                'selected_indices': selected_indices
+            },
+            'results': json_results
+        }
+
+        summary_path = os.path.join(args.output_dir, 'results_summary.json')
+        with open(summary_path, 'w') as f:
+            json.dump(complete_json, f, indent=2)
+
+        print(f"Results summary saved to: {summary_path}")
+        print("\n=== Analysis complete! ===")
+        print(f"All outputs saved to: {args.output_dir}")
+
+
+if __name__ == '__main__':
+    main()

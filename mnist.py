@@ -19,11 +19,12 @@ x_train = x_train.astype('float32') / 255
 x_test = x_test.astype('float32') / 255
 
 """
-show a simple example usage of VeriX. 
+show a simple example usage of VeriX.
 """
 verix = VeriX(dataset="MNIST",
               image=x_test[10],
-              model_path="models/mnist-10x2.onnx")
+              model_path="models/mnist-10x2.onnx",
+              output_dir="outputs/mnist")
 verix.traversal_order(traverse="heuristic")
 verix.get_explanation(epsilon=0.05)
 exit()

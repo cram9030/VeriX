@@ -128,7 +128,8 @@ RUN pip install \
     tf2onnx==1.16.1 \
     scikit-image==0.23.2 \
     matplotlib==3.8.4 \
-    pillow==10.3.0
+    pillow==10.3.0 \
+    plotly==5.22.0
 
 # Set up workspace
 WORKDIR /workspace
