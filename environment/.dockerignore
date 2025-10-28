@@ -1,0 +1,53 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (avoid recursive copying)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Outputs and temporary files
+*.png
+*.jpg
+*.jpeg
+*.log
+outputs/
+
+# Documentation (if large)
+*.pdf
+docs/
+
+# Large model files that should be volume-mounted instead
+# Uncomment if you want to exclude models from the image
+# *.h5
+# *.onnx
+# *.pickle

@@ -1,0 +1,97 @@
+services:
+  # VeriX development environment with GPU support
+  verix-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: verix:latest-gpu
+    container_name: verix-dev-gpu
+
+    # GPU configuration for NVIDIA runtime
+    runtime: nvidia
+
+    # Environment variables
+    environment:
+      # NVIDIA/CUDA settings
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+      # Gurobi license configuration
+      - GRB_LICENSE_FILE=/opt/gurobi/gurobi.lic
+      - GUROBI_HOME=/opt/gurobi/linux64
+
+      # TensorFlow settings
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - TF_FORCE_GPU_ALLOW_GROWTH=true
+
+      # Python settings
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+
+    # Volume mounts
+    volumes:
+      # Mount the VeriX source code
+      - ../:/workspace/verix:rw
+
+      # Mount models directory (if you want persistent model storage)
+      - ../models:/workspace/verix/models:rw
+
+      # Mount Gurobi license file (update path as needed)
+      # Uncomment and adjust the path to your license file
+      # - ~/gurobi.lic:/opt/gurobi/gurobi.lic:ro
+
+      # Optional: Mount a directory for outputs/results
+      - ./outputs:/workspace/outputs:rw
+
+    # Working directory
+    working_dir: /workspace/verix
+
+    # Keep container running
+    stdin_open: true
+    tty: true
+
+    # Network configuration
+    network_mode: bridge
+
+    # Default command
+    command: /bin/bash
+
+    # Shm size for large model training
+    shm_size: '8gb'
+
+  # CPU-only variant (for systems without GPU)
+  verix-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: verix:latest-cpu
+    container_name: verix-dev-cpu
+
+    # Environment variables (same as GPU but without GPU-specific vars)
+    environment:
+      - GRB_LICENSE_FILE=/opt/gurobi/gurobi.lic
+      - GUROBI_HOME=/opt/gurobi/linux64
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+
+    # Volume mounts (same as GPU variant)
+    volumes:
+      - ../:/workspace/verix:rw
+      - ../models:/workspace/verix/models:rw
+      # - ~/gurobi.lic:/opt/gurobi/gurobi.lic:ro
+      - ./outputs:/workspace/outputs:rw
+
+    working_dir: /workspace/verix
+    stdin_open: true
+    tty: true
+    network_mode: bridge
+    command: /bin/bash
+    shm_size: '4gb'
+
+# Optional: Define a custom network
+networks:
+  default:
+    name: verix-network
