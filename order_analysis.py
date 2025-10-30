@@ -408,6 +408,125 @@ def create_composited_frame(base_image, history_entry, dataset):
     return frame_uint8
 
 
+def generate_sensitivity_overlay(image, sensitivity, pixel_set, dataset,
+                                 set_name, image_idx, output_dir,
+                                 global_sens_range=None):
+    """
+    Generate interactive visualization of sensitivity values overlaid on image.
+    Only pixels in pixel_set will show sensitivity values as a heatmap overlay.
+
+    :param image: original image array
+    :param sensitivity: 2D sensitivity array (width, height)
+    :param pixel_set: set of pixel indices to visualize (sat_set/unsat_set)
+    :param dataset: dataset name ('MNIST' or 'GTSRB')
+    :param set_name: name of the set ('SAT' or 'UNSAT')
+    :param image_idx: index of the image
+    :param output_dir: directory to save the HTML file
+    :param global_sens_range: tuple (min, max) for consistent color scaling
+    """
+    from matplotlib import cm
+    from matplotlib.colors import Normalize
+
+    height = image.shape[1]
+
+    # Convert base image to RGB for display
+    if dataset == 'MNIST':
+        base_gray = image[:, :, 0]
+        base_rgb = np.stack([base_gray, base_gray, base_gray], axis=-1)
+    else:
+        base_rgb = image.copy()
+
+    # Convert to uint8 for base image
+    base_uint8 = (base_rgb * 255).astype(np.uint8)
+
+    # Extract sensitivity values for selected pixels
+    sensitivity_values = []
+    for pixel_idx in pixel_set:
+        row, col = pixel_idx // height, pixel_idx % height
+        sensitivity_values.append(sensitivity[row, col])
+
+    if len(sensitivity_values) > 0:
+        # Normalize sensitivity for color mapping
+        sens_array = np.array(sensitivity_values)
+
+        # Use global range if provided, otherwise use local range
+        if global_sens_range is not None:
+            vmin, vmax = global_sens_range
+        else:
+            vmin, vmax = sens_array.min(), sens_array.max()
+
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        colormap = cm.get_cmap('viridis')
+
+        alpha = 0.7  # Overlay transparency
+        result_rgb = base_rgb.copy()
+
+        # Overlay sensitivity colors on selected pixels
+        for pixel_idx in pixel_set:
+            row, col = pixel_idx // height, pixel_idx % height
+            sens_val = sensitivity[row, col]
+            color_rgba = colormap(norm(sens_val))
+            color_rgb = np.array(color_rgba[:3])
+            result_rgb[row, col] = alpha * color_rgb + (1 - alpha) * result_rgb[row, col]
+
+        # Convert to uint8
+        result_uint8 = (result_rgb * 255).astype(np.uint8)
+
+        # Create Plotly figure with overlaid image
+        fig = go.Figure(data=go.Image(z=result_uint8))
+
+        # Add a dummy scatter trace for colorbar
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode='markers',
+            marker=dict(
+                size=1,
+                color=[vmin, vmax],
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text='Sensitivity', font=dict(size=14)),
+                    len=0.7,
+                    thickness=15,
+                    x=1.02
+                )
+            ),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+    else:
+        # No pixels in the set
+        fig = go.Figure(data=go.Image(z=base_uint8))
+        fig.add_annotation(
+            text=f"No pixels in {set_name} set",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=16, color="red")
+        )
+
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=f'{dataset} - {set_name} Set Sensitivity Overlay - Image {image_idx}',
+            font=dict(size=18)
+        ),
+        xaxis=dict(showticklabels=False, showgrid=False, constrain='domain'),
+        yaxis=dict(showticklabels=False, showgrid=False, scaleanchor='x', constrain='domain'),
+        template='plotly_white',
+        height=600,
+        width=700
+    )
+
+    # Save as HTML
+    output_filename = f'sensitivity_overlay_{set_name.lower()}_image_{image_idx}.html'
+    output_path = os.path.join(output_dir, output_filename)
+    fig.write_html(output_path)
+    print(f"  Sensitivity overlay ({set_name}) saved to: {output_path}")
+
+    return fig
+
+
 def generate_animation(image, result, dataset, traverse, image_idx, output_dir):
     """
     Generate animation showing the pixel classification process.
@@ -630,6 +749,43 @@ def main():
                 image_idx=animation_img_idx,
                 output_dir=args.output_dir
             )
+
+            # Generate sensitivity overlays for heuristic traversal
+            if animation_result['heuristic_sensitivity'] is not None:
+                print("\n--- Generating sensitivity overlays ---")
+
+                # Calculate global sensitivity range for consistent coloring
+                sensitivity = animation_result['heuristic_sensitivity']
+                global_sens_range = (
+                    float(sensitivity.min()),
+                    float(sensitivity.max())
+                )
+
+                print("  Generating SAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=sensitivity,
+                    pixel_set=animation_result['heuristic']['sat_set'],
+                    dataset=dataset,
+                    set_name='SAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=global_sens_range
+                )
+
+                print("  Generating UNSAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=sensitivity,
+                    pixel_set=animation_result['heuristic']['unsat_set'],
+                    dataset=dataset,
+                    set_name='UNSAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=global_sens_range
+                )
+            else:
+                print("\n--- Note: No sensitivity data available ---")
         else:
             print(f"\n--- ERROR: animation_image_idx {args.animation_image_idx} is out of range (0-{len(all_results)-1}) ---")
 
@@ -717,6 +873,43 @@ def main():
                 image_idx=animation_img_idx,
                 output_dir=args.output_dir
             )
+
+            # Generate sensitivity overlays for heuristic traversal
+            if animation_results['heuristic_sensitivity'] is not None:
+                print("\n--- Generating sensitivity overlays ---")
+
+                # Calculate global sensitivity range for consistent coloring
+                sensitivity = animation_results['heuristic_sensitivity']
+                global_sens_range = (
+                    float(sensitivity.min()),
+                    float(sensitivity.max())
+                )
+
+                print("  Generating SAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=sensitivity,
+                    pixel_set=animation_results['heuristic']['sat_set'],
+                    dataset=args.dataset,
+                    set_name='SAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=global_sens_range
+                )
+
+                print("  Generating UNSAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=sensitivity,
+                    pixel_set=animation_results['heuristic']['unsat_set'],
+                    dataset=args.dataset,
+                    set_name='UNSAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=global_sens_range
+                )
+            else:
+                print("\n--- Note: No sensitivity data available ---")
         else:
             print(f"\n--- ERROR: animation_image_idx {args.animation_image_idx} is out of range (0-{len(selected_indices)-1}) ---")
 
