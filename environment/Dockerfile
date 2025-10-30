@@ -129,7 +129,8 @@ RUN pip install \
     scikit-image==0.23.2 \
     matplotlib==3.8.4 \
     pillow==10.3.0 \
-    plotly==5.22.0
+    plotly==5.22.0 \
+    tqdm==4.66.2
 
 # Set up workspace
 WORKDIR /workspace

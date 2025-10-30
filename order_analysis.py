@@ -17,8 +17,11 @@ import random
 import base64
 from datetime import datetime
 from io import BytesIO
+from multiprocessing import Pool, cpu_count
+from functools import partial
 import numpy as np
 import plotly.graph_objects as go
+from tqdm import tqdm
 from VeriX import VeriX
 
 
@@ -109,7 +112,7 @@ def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir
     :param traverse: 'heuristic' or 'random'
     :param epsilon: perturbation magnitude
     :param output_dir: directory for outputs
-    :return: result dictionary from get_explanation
+    :return: dictionary with 'result' (from get_explanation) and 'sensitivity' (numpy array or None)
     """
     verix = VeriX(
         dataset=dataset,
@@ -128,7 +131,56 @@ def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir
         plot_timeout=False
     )
 
-    return result
+    # Capture sensitivity (only available for heuristic traversal)
+    return {
+        'result': result,
+        'sensitivity': verix.sensitivity
+    }
+
+
+def process_single_image(img_idx, x_test, dataset, model_path, epsilon, output_dir):
+    """
+    Process a single image with both heuristic and random traversal orders.
+    This function is designed to be called by multiprocessing.Pool.
+
+    :param img_idx: index of image in x_test
+    :param x_test: test dataset array
+    :param dataset: dataset name
+    :param model_path: path to ONNX model
+    :param epsilon: perturbation magnitude
+    :param output_dir: directory for outputs
+    :return: dictionary containing results for both traversal orders
+    """
+    image = x_test[img_idx]
+
+    # Run heuristic traversal
+    heuristic_analysis = run_verix_analysis(
+        dataset=dataset,
+        image=image,
+        model_path=model_path,
+        traverse='heuristic',
+        epsilon=epsilon,
+        output_dir=output_dir
+    )
+
+    # Run random traversal
+    random_analysis = run_verix_analysis(
+        dataset=dataset,
+        image=image,
+        model_path=model_path,
+        traverse='random',
+        epsilon=epsilon,
+        output_dir=output_dir
+    )
+
+    return {
+        'image_idx': img_idx,
+        'image': image,
+        'heuristic': heuristic_analysis['result'],
+        'heuristic_sensitivity': heuristic_analysis['sensitivity'],
+        'random': random_analysis['result'],
+        'random_sensitivity': random_analysis['sensitivity']
+    }
 
 
 def load_results_from_json(json_path):
@@ -150,6 +202,15 @@ def load_results_from_json(json_path):
         # Decode image from base64
         image = decode_image_from_base64(json_result['image_data'])
 
+        # Convert sensitivity lists back to numpy arrays (handle None and backward compatibility)
+        heuristic_sensitivity = json_result['heuristic'].get('sensitivity')
+        if heuristic_sensitivity is not None:
+            heuristic_sensitivity = np.array(heuristic_sensitivity)
+
+        random_sensitivity = json_result['random'].get('sensitivity')
+        if random_sensitivity is not None:
+            random_sensitivity = np.array(random_sensitivity)
+
         # Reconstruct result structure
         result = {
             'image_idx': json_result['image_idx'],
@@ -160,12 +221,14 @@ def load_results_from_json(json_path):
                 'unsat_set': json_result['heuristic']['unsat_set'],
                 'history': json_result['heuristic']['history']
             },
+            'heuristic_sensitivity': heuristic_sensitivity,
             'random': {
                 'sat_set': json_result['random']['sat_set'],
                 'timeout_set': json_result['random']['timeout_set'],
                 'unsat_set': json_result['random']['unsat_set'],
                 'history': json_result['random']['history']
-            }
+            },
+            'random_sensitivity': random_sensitivity
         }
         all_results.append(result)
 
@@ -508,6 +571,8 @@ def main():
                         help='Specific image indices to use (optional)')
     parser.add_argument('--random_seed', type=int, default=42,
                         help='Random seed for reproducibility (default: 42)')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers (default: auto-detect as cpu_count // 4)')
 
     # Common parameters
     parser.add_argument('--animation_image_idx', type=int, required=True,
@@ -585,47 +650,42 @@ def main():
         selected_indices = select_images(x_test, args.num_images, args.image_indices, args.random_seed)
         print(f"Selected image indices: {selected_indices}")
 
-        # Store all results
-        all_results = []
+        # Calculate number of parallel workers
+        if args.workers is not None:
+            num_workers = args.workers
+        else:
+            # Auto-detect: use cpu_count // 4 as smart default
+            num_workers = max(1, cpu_count() // 4)
+        print(f"Using {num_workers} parallel workers")
 
-        # Run analysis on each image
-        for i, img_idx in enumerate(selected_indices):
-            print(f"\n--- Processing image {i+1}/{args.num_images} (index: {img_idx}) ---")
-            image = x_test[img_idx]
+        # Run analysis on each image in parallel
+        print(f"\n--- Processing {args.num_images} images in parallel ---")
+        process_func = partial(
+            process_single_image,
+            x_test=x_test,
+            dataset=args.dataset,
+            model_path=model_path,
+            epsilon=args.epsilon,
+            output_dir=args.output_dir
+        )
 
-            print("  Running heuristic traversal...")
-            heuristic_result = run_verix_analysis(
-                dataset=args.dataset,
-                image=image,
-                model_path=model_path,
-                traverse='heuristic',
-                epsilon=args.epsilon,
-                output_dir=args.output_dir
-            )
+        with Pool(processes=num_workers) as pool:
+            all_results = list(tqdm(
+                pool.imap(process_func, selected_indices),
+                total=len(selected_indices),
+                desc="Analyzing images"
+            ))
 
-            print("  Running random traversal...")
-            random_result = run_verix_analysis(
-                dataset=args.dataset,
-                image=image,
-                model_path=model_path,
-                traverse='random',
-                epsilon=args.epsilon,
-                output_dir=args.output_dir
-            )
-
-            all_results.append({
-                'image_idx': img_idx,
-                'image': image,  # Store the actual image for JSON encoding
-                'heuristic': heuristic_result,
-                'random': random_result
-            })
-
-            print(f"  Heuristic - SAT: {len(heuristic_result['sat_set'])}, "
-                  f"TIMEOUT: {len(heuristic_result['timeout_set'])}, "
-                  f"UNSAT: {len(heuristic_result['unsat_set'])}")
-            print(f"  Random - SAT: {len(random_result['sat_set'])}, "
-                  f"TIMEOUT: {len(random_result['timeout_set'])}, "
-                  f"UNSAT: {len(random_result['unsat_set'])}")
+        # Print summary for each image
+        for i, result in enumerate(all_results):
+            img_idx = result['image_idx']
+            print(f"\n--- Image {i+1}/{args.num_images} (index: {img_idx}) Results ---")
+            print(f"  Heuristic - SAT: {len(result['heuristic']['sat_set'])}, "
+                  f"TIMEOUT: {len(result['heuristic']['timeout_set'])}, "
+                  f"UNSAT: {len(result['heuristic']['unsat_set'])}")
+            print(f"  Random - SAT: {len(result['random']['sat_set'])}, "
+                  f"TIMEOUT: {len(result['random']['timeout_set'])}, "
+                  f"UNSAT: {len(result['random']['unsat_set'])}")
 
         # Generate histogram
         print("\n--- Generating histogram ---")
@@ -680,6 +740,18 @@ def main():
                     'unsat_set': [int(x) for x in entry['unsat_set']]
                 } for entry in history]
 
+            # Convert sensitivity arrays to lists (handle None values)
+            heuristic_sensitivity_list = (
+                result['heuristic_sensitivity'].tolist()
+                if result['heuristic_sensitivity'] is not None
+                else None
+            )
+            random_sensitivity_list = (
+                result['random_sensitivity'].tolist()
+                if result['random_sensitivity'] is not None
+                else None
+            )
+
             json_result = {
                 'image_idx': int(result['image_idx']),
                 'image_data': image_encoded,
@@ -688,13 +760,15 @@ def main():
                     'sat_set': [int(x) for x in result['heuristic']['sat_set']],
                     'timeout_set': [int(x) for x in result['heuristic']['timeout_set']],
                     'unsat_set': [int(x) for x in result['heuristic']['unsat_set']],
-                    'history': convert_history(result['heuristic']['history'])
+                    'history': convert_history(result['heuristic']['history']),
+                    'sensitivity': heuristic_sensitivity_list
                 },
                 'random': {
                     'sat_set': [int(x) for x in result['random']['sat_set']],
                     'timeout_set': [int(x) for x in result['random']['timeout_set']],
                     'unsat_set': [int(x) for x in result['random']['unsat_set']],
-                    'history': convert_history(result['random']['history'])
+                    'history': convert_history(result['random']['history']),
+                    'sensitivity': random_sensitivity_list
                 }
             }
             json_results.append(json_result)
@@ -703,8 +777,8 @@ def main():
         complete_json = {
             'metadata': {
                 'timestamp': datetime.now().isoformat(),
-                'script_version': '2.0',
-                'description': 'Complete VeriX order analysis results with full history and image data'
+                'script_version': '3.0',
+                'description': 'Complete VeriX order analysis results with full history, image data, and sensitivity maps'
             },
             'config': {
                 'dataset': args.dataset,

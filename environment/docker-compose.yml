@@ -29,6 +29,12 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
 
+      # Thread control for multiprocessing (prevent nested threading conflicts)
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+
     # Volume mounts
     volumes:
       # Mount the VeriX source code
@@ -76,6 +82,12 @@ services:
       - TF_ENABLE_ONEDNN_OPTS=0
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
+
+      # Thread control for multiprocessing (prevent nested threading conflicts)
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
 
     # Volume mounts (same as GPU variant)
     volumes:
