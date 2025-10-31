@@ -102,7 +102,7 @@ def select_images(x_test, num_images, image_indices=None, seed=None):
     return random.sample(range(len(x_test)), num_images)
 
 
-def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir):
+def run_verix_analysis(dataset, image, model_path, traverse, epsilon, delta, output_dir):
     """
     Run VeriX analysis on a single image with specified traversal order.
 
@@ -111,6 +111,7 @@ def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir
     :param model_path: path to ONNX model
     :param traverse: 'heuristic' or 'random'
     :param epsilon: perturbation magnitude
+    :param delta: epsilon offset for verification
     :param output_dir: directory for outputs
     :return: dictionary with 'result' (from get_explanation) and 'sensitivity' (numpy array or None)
     """
@@ -126,6 +127,7 @@ def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir
 
     result = verix.get_explanation(
         epsilon=epsilon,
+        delta=delta,
         plot_explanation=False,
         plot_counterfactual=False,
         plot_timeout=False
@@ -138,7 +140,7 @@ def run_verix_analysis(dataset, image, model_path, traverse, epsilon, output_dir
     }
 
 
-def process_single_image(img_idx, x_test, dataset, model_path, epsilon, output_dir):
+def process_single_image(img_idx, x_test, dataset, model_path, epsilon, delta, output_dir):
     """
     Process a single image with both heuristic and random traversal orders.
     This function is designed to be called by multiprocessing.Pool.
@@ -148,6 +150,7 @@ def process_single_image(img_idx, x_test, dataset, model_path, epsilon, output_d
     :param dataset: dataset name
     :param model_path: path to ONNX model
     :param epsilon: perturbation magnitude
+    :param delta: epsilon offset for verification
     :param output_dir: directory for outputs
     :return: dictionary containing results for both traversal orders
     """
@@ -160,6 +163,7 @@ def process_single_image(img_idx, x_test, dataset, model_path, epsilon, output_d
         model_path=model_path,
         traverse='heuristic',
         epsilon=epsilon,
+        delta=delta,
         output_dir=output_dir
     )
 
@@ -170,6 +174,7 @@ def process_single_image(img_idx, x_test, dataset, model_path, epsilon, output_d
         model_path=model_path,
         traverse='random',
         epsilon=epsilon,
+        delta=delta,
         output_dir=output_dir
     )
 
@@ -686,6 +691,8 @@ def main():
                         help='Number of images to analyze')
     parser.add_argument('--epsilon', type=float, default=None,
                         help='Perturbation magnitude (default: 0.05 for MNIST, 0.01 for GTSRB)')
+    parser.add_argument('--delta', type=float, default=-1e-6,
+                        help='Epsilon offset for verification (default: -1e-6)')
     parser.add_argument('--image_indices', type=int, nargs='+', default=None,
                         help='Specific image indices to use (optional)')
     parser.add_argument('--random_seed', type=int, default=42,
@@ -846,6 +853,7 @@ def main():
             dataset=args.dataset,
             model_path=model_path,
             epsilon=args.epsilon,
+            delta=args.delta,
             output_dir=args.output_dir
         )
 
@@ -1036,6 +1044,7 @@ def main():
                 'dataset': args.dataset,
                 'num_images': args.num_images,
                 'epsilon': float(args.epsilon),
+                'delta': float(args.delta),
                 'random_seed': args.random_seed,
                 'selected_indices': selected_indices
             },

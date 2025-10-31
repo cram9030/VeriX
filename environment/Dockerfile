@@ -46,9 +46,11 @@ ENV PATH="${GUROBI_HOME}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${GUROBI_HOME}/lib:${LD_LIBRARY_PATH}"
 ENV GRB_LICENSE_FILE=/opt/gurobi/gurobi.lic
 
-# Clone and build Marabou
+# Clone and build Marabou (pinned to specific commit for stability)
 WORKDIR /opt
-RUN git clone https://github.com/NeuralNetworkVerification/Marabou.git
+RUN git clone https://github.com/NeuralNetworkVerification/Marabou.git && \
+    cd Marabou && \
+    git checkout adc5b55790d3416152028dd53ee9d74c61810b86
 
 WORKDIR /opt/Marabou
 # Configure Marabou build

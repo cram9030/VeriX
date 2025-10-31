@@ -32,7 +32,26 @@ verix.get_explanation(epsilon=0.05)
 ```
 Use the `heuristic` feature-level sensitivity method to set the traversal order, and then set the perturbation magnitude `epsilon` to obtain the explanation. Be default, the *original image*, *the sensitivity*, and *the explanation* will be plotted and saved.
 
-See `mnist.py` for a full example usage. The `GTSRB` dataset is also supported as in `gtsrb.py`. 
+See `mnist.py` for a full example usage. The `GTSRB` dataset is also supported as in `gtsrb.py`.
+
+## Order Analysis
+
+The `order_analysis.py` script analyzes the efficiency of different traversal orders (heuristic vs random) by running VeriX on multiple images. It generates histograms comparing the traversal orders and animations showing the pixel classification process.
+
+### Example Usage
+
+```bash
+python order_analysis.py --dataset MNIST --num_images 5 --animation_image_idx 0 --epsilon 0.05 --delta -1e-6
+```
+
+This command:
+- Analyzes 5 MNIST images with both heuristic and random traversal orders
+- Uses epsilon=0.05 for perturbation magnitude
+- Uses delta=-1e-6 for epsilon offset in verification (controls the margin for adversarial example detection)
+- Generates animations for the first image (index 0)
+- Saves results to `outputs/order_analysis/`
+
+The `delta` parameter controls the epsilon offset used in the verification process. A negative delta (like `-1e-6`) creates a small margin that makes the adversarial detection slightly more conservative. 
 
 
 #### To use VeriX, a neural network verification tool called Marabou and an LP solver called Gurobi need to be installed in advance.
