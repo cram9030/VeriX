@@ -784,6 +784,30 @@ def main():
                     output_dir=args.output_dir,
                     global_sens_range=global_sens_range
                 )
+
+                print("  Generating Random SAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=sensitivity,
+                    pixel_set=animation_result['random']['sat_set'],
+                    dataset=dataset,
+                    set_name='Random_SAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=global_sens_range
+                )
+
+                print("  Generating Random UNSAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=sensitivity,
+                    pixel_set=animation_result['random']['unsat_set'],
+                    dataset=dataset,
+                    set_name='Random_UNSAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=global_sens_range
+                )
             else:
                 print("\n--- Note: No sensitivity data available ---")
         else:
@@ -907,6 +931,41 @@ def main():
                     image_idx=animation_img_idx,
                     output_dir=args.output_dir,
                     global_sens_range=global_sens_range
+                )
+
+            # Generate sensitivity overlays for random traversal
+            if animation_results['random_sensitivity'] is not None:
+                print("\n--- Generating random traversal sensitivity overlays ---")
+
+                # Calculate global sensitivity range for consistent coloring
+                random_sensitivity = animation_results['random_sensitivity']
+                random_sens_range = (
+                    float(random_sensitivity.min()),
+                    float(random_sensitivity.max())
+                )
+
+                print("  Generating Random SAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=random_sensitivity,
+                    pixel_set=animation_results['random']['sat_set'],
+                    dataset=args.dataset,
+                    set_name='Random_SAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=random_sens_range
+                )
+
+                print("  Generating Random UNSAT set sensitivity overlay...")
+                generate_sensitivity_overlay(
+                    image=animation_image,
+                    sensitivity=random_sensitivity,
+                    pixel_set=animation_results['random']['unsat_set'],
+                    dataset=args.dataset,
+                    set_name='Random_UNSAT',
+                    image_idx=animation_img_idx,
+                    output_dir=args.output_dir,
+                    global_sens_range=random_sens_range
                 )
             else:
                 print("\n--- Note: No sensitivity data available ---")
